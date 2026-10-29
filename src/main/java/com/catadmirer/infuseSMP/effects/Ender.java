@@ -3,16 +3,15 @@ package com.catadmirer.infuseSMP.effects;
 import com.catadmirer.infuseSMP.EffectConstants;
 import com.catadmirer.infuseSMP.Message;
 import com.catadmirer.infuseSMP.managers.CooldownManager;
+import com.catadmirer.infuseSMP.util.SchedulerUtil;
 
 import net.kyori.adventure.text.Component;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.damage.DamageSource;
 import org.bukkit.damage.DamageType;
 import org.bukkit.entity.DragonFireball;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.Fireball;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -27,76 +26,65 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.Vector;
 
-import java.util.Collection;
-import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 
 public class Ender extends InfuseEffect {
     public static final Component fireballName = Component.text("Cursing Projectile");
-    public static final Set<UUID> cursedPlayers = new HashSet<>();
+    public static final Set<UUID> cursedPlayers = ConcurrentHashMap.newKeySet();
+    private static final Set<UUID> propagatedDamage = ConcurrentHashMap.newKeySet();
 
-    public Ender() {
-        this(false);
-    }
+    public Ender() { this(false); }
 
     public Ender(boolean augmented) {
         super("ender", EffectConstants.Id.ENDER, augmented, EffectConstants.PotionColor.ENDER, EffectConstants.RitualColor.ENDER, EffectConstants.BackgroundColor.ENDER);
     }
 
     public void equip(Player owner) {}
-
     public void unequip(Player owner) {}
 
     @Deprecated()
     public void applyPassives(Player owner) {
-        final double radius = plugin.getMainConfig().enderPassiveRadius();
-
         if (plugin.getRegionBlocker().isEffectBlocked(owner, this)) return;
-        Collection<Entity> nearbyEntities = owner.getWorld().getNearbyEntities(owner.getLocation(), radius, radius, radius);
-        for (Entity entity : nearbyEntities) {
-            if (!(entity instanceof Player nearby)) continue;
-            if (nearby.getUniqueId().equals(owner.getUniqueId())) continue;
-            if (plugin.getTrustManager().doesTrust(owner, nearby)) continue;
-            nearby.addPotionEffect(new PotionEffect(PotionEffectType.GLOWING, 40, 1, false, false));
-        }
+
+        final UUID ownerId = owner.getUniqueId();
+        final Location center = owner.getLocation().clone();
+        final double radius = plugin.getMainConfig().enderPassiveRadius();
+        SchedulerUtil.forEachNearbyPlayer(plugin, center, radius,
+                nearby -> !nearby.getUniqueId().equals(ownerId),
+                nearby -> {
+                    if (plugin.getTrustManager().doesTrust(ownerId, nearby.getUniqueId())) return;
+                    if (plugin.getRegionBlocker().isEffectBlocked(nearby, this)) return;
+                    nearby.addPotionEffect(new PotionEffect(PotionEffectType.GLOWING, 40, 1, false, false));
+                });
     }
 
     public void activateSpark(Player owner, String slot) {
         UUID playerUUID = owner.getUniqueId();
-
         if (CooldownManager.isOnCooldown(playerUUID, plainKey + "_" + slot)) return;
         if (!plugin.getRegionBlocker().canUseSpark(owner)) return;
 
-        // Applying cooldowns and durations for the effect
         long cooldown = plugin.getMainConfig().cooldown(this);
         long duration = plugin.getMainConfig().duration(this);
-
         CooldownManager.setTimes(playerUUID, plainKey + "_" + slot, duration, cooldown);
-
         owner.playSound(owner.getLocation(), Sound.BLOCK_BEACON_POWER_SELECT, 1, 1);
 
-        // Teleporting the player in the direction they're looking
         Location startLoc = owner.getEyeLocation();
         Vector direction = startLoc.getDirection().normalize();
         final int maxDistance = plugin.getMainConfig().enderSparkMaxDistance();
-
         Location targetLoc = null;
-
         for (int i = 1; i <= maxDistance; i++) {
             Location checkLoc = startLoc.clone().add(direction.clone().multiply(i));
-            if (isSafeTeleportLocation(checkLoc)) {
-                targetLoc = checkLoc;
-            } else {
-                break;
-            }
+            if (isSafeTeleportLocation(checkLoc)) targetLoc = checkLoc;
+            else break;
         }
 
         if (targetLoc != null) {
             Location finalLoc = targetLoc.clone();
             finalLoc.setYaw(owner.getLocation().getYaw());
             finalLoc.setPitch(owner.getLocation().getPitch());
-            owner.teleport(finalLoc);
+            owner.teleportAsync(finalLoc);
         }
     }
 
@@ -104,83 +92,54 @@ public class Ender extends InfuseEffect {
         return loc.getBlock().getType().isAir() && loc.clone().add(0, 1, 0).getBlock().getType().isAir();
     }
 
-    public InfuseEffect getRegularVersion() {
-        return new Ender();
-    }
-
-    public InfuseEffect getAugmentedVersion() {
-        return new Ender(true);
-    }
-
-    @Override
-    public Message getName() {
-        return new Message(augmented ? Message.MessageType.AUG_ENDER_NAME : Message.MessageType.ENDER_NAME);
-    }
-
-    @Override
-    public Message getLore() {
-        return new Message(augmented ? Message.MessageType.AUG_ENDER_LORE : Message.MessageType.ENDER_LORE);
-    }
+    public InfuseEffect getRegularVersion() { return new Ender(); }
+    public InfuseEffect getAugmentedVersion() { return new Ender(true); }
+    @Override public Message getName() { return new Message(augmented ? Message.MessageType.AUG_ENDER_NAME : Message.MessageType.ENDER_NAME); }
+    @Override public Message getLore() { return new Message(augmented ? Message.MessageType.AUG_ENDER_LORE : Message.MessageType.ENDER_LORE); }
 
     public void shootCursingFireball(Player player) {
         UUID uuid = player.getUniqueId();
-
         if (CooldownManager.isOnCooldown(player.getUniqueId(), "ender_fireball")) return;
         if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
 
         ItemStack handItem = player.getInventory().getItemInMainHand();
-        if (handItem.getAmount() > 1) {
-            handItem.setAmount(handItem.getAmount() - 1);
-        } else {
-            // Is this necessary?
-            player.getInventory().setItemInMainHand(null);
-        }
+        if (handItem.getAmount() > 1) handItem.setAmount(handItem.getAmount() - 1);
+        else player.getInventory().setItemInMainHand(null);
 
         Fireball fireball = player.launchProjectile(DragonFireball.class);
         fireball.setIsIncendiary(false);
         fireball.customName(fireballName);
-
         CooldownManager.setCooldown(uuid, "ender_fireball", 30);
-
-        Vector velocity = fireball.getVelocity();
-        velocity.multiply(2.0);
-        fireball.setVelocity(velocity);
+        fireball.setVelocity(fireball.getVelocity().multiply(2.0));
     }
 
     public void cursePlayer(UUID playerUUID, long delayTicks) {
         cursedPlayers.add(playerUUID);
-
-        Bukkit.getScheduler().runTaskLater(plugin, t -> cursedPlayers.remove(playerUUID), delayTicks);
+        SchedulerUtil.runGlobalDelayed(plugin, task -> cursedPlayers.remove(playerUUID), delayTicks);
     }
-
-    //// Listeners ////
-    //// These are only registered once, so they need to be able to handle being used for every player, no matter what effects they actually have
 
     @EventHandler
     public void onEntityDamage(EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player damagedPlayer)) return;
-
-        // Making sure the damaged player is cursed
         UUID damagedUUID = damagedPlayer.getUniqueId();
         if (!cursedPlayers.contains(damagedUUID)) return;
-
-        // Making sure the damage source isn't the one made by this plugin (prevents looping curse damage)
-        if (event.getDamageSource().getDamageType() == DamageType.CAMPFIRE && event.getDamageSource().getDirectEntity() != null) return;
+        if (propagatedDamage.contains(damagedUUID)) return;
         if (plugin.getRegionBlocker().isEffectBlocked(damagedPlayer, this)) return;
 
-        // Making the fake damageSource
-        DamageSource fakeSource = DamageSource.builder(DamageType.CAMPFIRE).withDirectEntity(damagedPlayer).build();
+        final double sharedDamage = event.getDamage();
+        SchedulerUtil.forEachOnlinePlayer(plugin, player -> {
+            UUID targetId = player.getUniqueId();
+            if (targetId.equals(damagedUUID) || !cursedPlayers.contains(targetId)) return;
+            if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
 
-        // Sharing curse damage with all other cursed players
-        for (UUID cursedUUID : cursedPlayers) {
-            // Skipping the player who was hit
-            if (cursedUUID == damagedUUID) continue;
-
-            Player player = Bukkit.getPlayer(cursedUUID);
-            if (plugin.getRegionBlocker().isEffectBlocked(player, this)) continue;
-
-            player.damage(event.getDamage(), fakeSource);
-        }
+            propagatedDamage.add(targetId);
+            try {
+                DamageSource fakeSource = DamageSource.builder(DamageType.CAMPFIRE).build();
+                player.damage(sharedDamage, fakeSource);
+            } finally {
+                propagatedDamage.remove(targetId);
+            }
+        });
     }
 
     @EventHandler
@@ -188,32 +147,20 @@ public class Ender extends InfuseEffect {
         if (!(event.getDamager() instanceof Player attacker)) return;
         if (!(event.getEntity() instanceof LivingEntity mob)) return;
         if (event.getEntity() instanceof Player) return;
-
         UUID attackerUUID = attacker.getUniqueId();
-        if (CooldownManager.isEffectActive(attackerUUID, "ender") && !plugin.getRegionBlocker().isEffectBlocked(attacker, this)) {
-            mob.setHealth(0);
-        }
+        if (CooldownManager.isEffectActive(attackerUUID, "ender") && !plugin.getRegionBlocker().isEffectBlocked(attacker, this)) mob.setHealth(0);
     }
 
     @EventHandler
     public void onUseDragonBreath(PlayerInteractEvent event) {
-        // Listening for right clicks
         Action action = event.getAction();
         if (!(action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK)) return;
-
-        // Making sure the player has the ender effect
         Player player = event.getPlayer();
         if (!plugin.getDataManager().hasEffect(player, this)) return;
-
-        // Making sure the player used a bottle of dragons breath
         ItemStack item = event.getItem();
-        if (item == null) return;
-        if (item.getType() != Material.DRAGON_BREATH) return;
-
-        // Making sure the cursing fireball isn't on cooldown
+        if (item == null || item.getType() != Material.DRAGON_BREATH) return;
         if (CooldownManager.isOnCooldown(player.getUniqueId(), "ender_fireball")) return;
         if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
-
         shootCursingFireball(player);
         event.setCancelled(true);
     }
@@ -222,10 +169,8 @@ public class Ender extends InfuseEffect {
     public void enderCurseHit(EntityDamageByEntityEvent event) {
         if (!(event.getEntity() instanceof Player target)) return;
         if (!(event.getDamager() instanceof Player attacker)) return;
-
         if (!plugin.getDataManager().hasEffect(attacker, this)) return;
         if (plugin.getRegionBlocker().isEffectBlocked(attacker, this)) return;
-
         cursePlayer(target.getUniqueId(), 1200);
     }
 
@@ -236,10 +181,8 @@ public class Ender extends InfuseEffect {
         if (!(event.getEntity() instanceof Player target)) return;
         if (!(fireball.getShooter() instanceof Player shooter)) return;
         if (plugin.getTrustManager().doesTrust(shooter, target)) return;
-
         if (plugin.getRegionBlocker().isEffectBlocked(shooter, this)) return;
         if (plugin.getRegionBlocker().isEffectBlocked(target, this)) return;
-
         cursePlayer(target.getUniqueId(), 1200);
         event.setDamage(0);
     }
@@ -251,10 +194,8 @@ public class Ender extends InfuseEffect {
         if (!(event.getHitEntity() instanceof Player target)) return;
         if (!(fireball.getShooter() instanceof Player shooter)) return;
         if (plugin.getTrustManager().doesTrust(shooter, target)) return;
-
         if (plugin.getRegionBlocker().isEffectBlocked(shooter, this)) return;
         if (plugin.getRegionBlocker().isEffectBlocked(target, this)) return;
-
         cursePlayer(target.getUniqueId(), 1200);
     }
 }

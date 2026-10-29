@@ -2,47 +2,35 @@ package com.catadmirer.infuseSMP.managers;
 
 import com.catadmirer.infuseSMP.Infuse;
 import com.catadmirer.infuseSMP.effects.InfuseEffect;
-import java.util.UUID;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
-import org.bukkit.Bukkit;
-import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.entity.Player;
 
-public class ActionBarUpdater extends BukkitRunnable {
-    private final Key EFFECTS_FONT = Key.key("infuse", "effects");
+import java.util.UUID;
+
+/** Composes and sends a single player's Infuse action bar. */
+public final class ActionBarUpdater {
+    private static final Key EFFECTS_FONT = Key.key("infuse", "effects");
+
     private final Infuse plugin;
 
     public ActionBarUpdater(Infuse plugin) {
         this.plugin = plugin;
     }
 
-    @Override
-    public void run() {
-        Bukkit.getOnlinePlayers().forEach(player -> {
-            UUID uuid = player.getUniqueId();
+    public void update(Player player) {
+        UUID uuid = player.getUniqueId();
+        char placeholder = plugin.getMainConfig().emptyEffectIcon() ? '\uffff' : ' ';
 
-            // Composing the action bar
-            InfuseEffect effect;
+        char leftIcon = placeholder;
+        char rightIcon = placeholder;
 
-            char placeholder = plugin.getMainConfig().emptyEffectIcon() ? '\uffff' : ' ';
+        InfuseEffect effect = plugin.getDataManager().getEffect(uuid, "1");
+        if (effect != null) leftIcon = effect.getIcon(player, "1");
 
-            char leftIcon = placeholder;
-            char rightIcon = placeholder;
+        effect = plugin.getDataManager().getEffect(uuid, "2");
+        if (effect != null) rightIcon = effect.getIcon(player, "2");
 
-            // Loading info for the first effect
-            effect = plugin.getDataManager().getEffect(uuid, "1");
-            if (effect != null) {
-                leftIcon = effect.getIcon(player, "1");
-            }
-
-            // Loading info for the second effect
-            effect = plugin.getDataManager().getEffect(uuid, "2");
-            if (effect != null) {
-                rightIcon = effect.getIcon(player, "2");
-            }
-
-            // Sending the action bar
-            player.sendActionBar(Component.text(leftIcon + " " + rightIcon).font(EFFECTS_FONT));
-        });
+        player.sendActionBar(Component.text(leftIcon + " " + rightIcon).font(EFFECTS_FONT));
     }
 }
