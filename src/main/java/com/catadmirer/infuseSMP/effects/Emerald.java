@@ -6,6 +6,7 @@ import com.catadmirer.infuseSMP.Message;
 import com.catadmirer.infuseSMP.Message.MessageType;
 import com.catadmirer.infuseSMP.events.TenHitsTakenEvent;
 import com.catadmirer.infuseSMP.managers.CooldownManager;
+import com.catadmirer.infuseSMP.util.SchedulerUtil;
 import com.catadmirer.infuseSMP.util.ItemUtil;
 import com.destroystokyo.paper.event.player.PlayerPickupExperienceEvent;
 import io.papermc.paper.datacomponent.DataComponentTypes;
@@ -54,328 +55,133 @@ import java.util.UUID;
 public class Emerald extends InfuseEffect {
     public static final NamespacedKey LOOTING_KEY = new NamespacedKey("infuse", "emerald_looting");
 
-    public Emerald() {
-        this(false);
-    }
+    public Emerald() { this(false); }
+    public Emerald(boolean augmented) { super("emerald", EffectConstants.Id.EMERALD, augmented, EffectConstants.PotionColor.EMERALD, EffectConstants.RitualColor.EMERALD, EffectConstants.BackgroundColor.EMERALD); }
 
-    public Emerald(boolean augmented) {
-        super("emerald", EffectConstants.Id.EMERALD, augmented, EffectConstants.PotionColor.EMERALD, EffectConstants.RitualColor.EMERALD, EffectConstants.BackgroundColor.EMERALD);
-    }
-
-    @Override
-    public void equip(Player owner) {
+    @Override public void equip(Player owner) {
         if (plugin.getRegionBlocker().isEffectBlocked(owner, this)) return;
-        // Applying the potion effect to the player
         owner.addPotionEffect(new PotionEffect(PotionEffectType.HERO_OF_THE_VILLAGE, -1, 0));
-
-        if (!(ItemUtil.isSword(owner.getInventory().getItemInMainHand()))) return;
-        ItemUtil.applySpecialEnchantment(owner.getInventory().getItemInMainHand(), LOOTING_KEY, Enchantment.LOOTING, plugin.getMainConfig().emeraldLootingLevel());
+        if (ItemUtil.isSword(owner.getInventory().getItemInMainHand())) ItemUtil.applySpecialEnchantment(owner.getInventory().getItemInMainHand(), LOOTING_KEY, Enchantment.LOOTING, plugin.getMainConfig().emeraldLootingLevel());
     }
-
-    @Override
-    public void unequip(Player owner) {
-        // Removing the potion effect
+    @Override public void unequip(Player owner) {
         owner.removePotionEffect(PotionEffectType.HERO_OF_THE_VILLAGE);
-
-        // Removing enchanted items from the owner's inventory
         for (ItemStack item : owner.getInventory()) {
-            if (item == null || item.getType() == Material.AIR) continue;
-
-            ItemUtil.removeSpecialEnchant(item, Emerald.LOOTING_KEY, Enchantment.LOOTING);
+            if (item != null && item.getType() != Material.AIR) ItemUtil.removeSpecialEnchant(item, Emerald.LOOTING_KEY, Enchantment.LOOTING);
         }
     }
-
-    @Override
-    public void activateSpark(Player owner, String slot) {
+    @Override public void activateSpark(Player owner, String slot) {
         UUID playerUUID = owner.getUniqueId();
-
-        // Making sure the player isn't on cooldown
-        if (CooldownManager.isOnCooldown(playerUUID, plainKey + "_" + slot)) return;
-        if (!plugin.getRegionBlocker().canUseSpark(owner)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(owner, this)) return;
-
-        // Applying effects for the emerald spark
+        if (CooldownManager.isOnCooldown(playerUUID, plainKey + "_" + slot) || !plugin.getRegionBlocker().canUseSpark(owner) || plugin.getRegionBlocker().isEffectBlocked(owner, this)) return;
         owner.playSound(owner.getLocation(), Sound.BLOCK_BEACON_POWER_SELECT, 1, 1);
-
-        // Applying cooldowns and durations for the effect
-        long cooldown = plugin.getMainConfig().cooldown(this);
-        long duration = plugin.getMainConfig().duration(this);
-
+        long cooldown = plugin.getMainConfig().cooldown(this), duration = plugin.getMainConfig().duration(this);
         owner.addPotionEffect(new PotionEffect(PotionEffectType.HERO_OF_THE_VILLAGE, (int) duration * 20, 4));
-
         CooldownManager.setTimes(playerUUID, plainKey + "_" + slot, duration, cooldown);
     }
+    @Override public InfuseEffect getRegularVersion() { return new Emerald(); }
+    @Override public InfuseEffect getAugmentedVersion() { return new Emerald(true); }
+    @Override public Message getName() { return new Message(augmented ? MessageType.AUG_EMERALD_NAME : MessageType.EMERALD_NAME); }
+    @Override public Message getLore() { return new Message(augmented ? MessageType.AUG_EMERALD_LORE : MessageType.EMERALD_LORE); }
 
-    @Override
-    public InfuseEffect getRegularVersion() {
-        return new Emerald();
-    }
-
-    @Override
-    public InfuseEffect getAugmentedVersion() {
-        return new Emerald(true);
-    }
-
-    @Override
-    public Message getName() {
-        return new Message(augmented ? MessageType.AUG_EMERALD_NAME : MessageType.EMERALD_NAME);
-    }
-
-    @Override
-    public Message getLore() {
-        return new Message(augmented ? MessageType.AUG_EMERALD_LORE : MessageType.EMERALD_LORE);
-    }
-
-    //// Listeners ////
-    //// These are only registered once, so they need to be able to handle being used for every player, no matter what effects they actually have
-
-    @EventHandler
-    public void enchantHeldItem(PlayerItemHeldEvent event) {
-        Infuse.LOGGER.debug("[Emerald] PlayerItemHeldEvent triggered");
-
+    @EventHandler public void enchantHeldItem(PlayerItemHeldEvent event) {
         Player player = event.getPlayer();
-        if (!plugin.getDataManager().hasEffect(player, this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
-
-        Infuse.LOGGER.debug("[Emerald] PlayerItemHeldEvent is for an emerald user");
-
+        if (!plugin.getDataManager().hasEffect(player, this) || plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
         ItemStack item = player.getInventory().getItem(event.getNewSlot());
-        if (!ItemUtil.isSword(item)) return;
-
-        Infuse.LOGGER.debug("[Emerald] Emerald user is holding a sword.  Enchanting with looting.");
-
-        ItemUtil.applySpecialEnchantment(item, LOOTING_KEY, Enchantment.LOOTING, plugin.getMainConfig().emeraldLootingLevel());
+        if (ItemUtil.isSword(item)) ItemUtil.applySpecialEnchantment(item, LOOTING_KEY, Enchantment.LOOTING, plugin.getMainConfig().emeraldLootingLevel());
     }
-
-    @EventHandler
-    public void removeLootingWhenStored(InventoryCloseEvent event) {
+    @EventHandler public void removeLootingWhenStored(InventoryCloseEvent event) {
         if (event.getView().getType() == InventoryType.PLAYER) return;
-
-        for (ItemStack item : event.getView().getTopInventory().getContents()) {
-            if (item == null || item.getType() == Material.AIR) continue;
-
-            ItemUtil.removeSpecialEnchant(item, Emerald.LOOTING_KEY, Enchantment.LOOTING);
-        }
+        for (ItemStack item : event.getView().getTopInventory().getContents()) if (item != null && item.getType() != Material.AIR) ItemUtil.removeSpecialEnchant(item, Emerald.LOOTING_KEY, Enchantment.LOOTING);
     }
-
-    @EventHandler
-    public void removeLootingWhenDropped(PlayerDropItemEvent event) {
-        ItemUtil.removeSpecialEnchant(event.getItemDrop().getItemStack(), Emerald.LOOTING_KEY, Enchantment.LOOTING);
-    }
-
-    @EventHandler
-    public void tenHitEvent(TenHitsTakenEvent event) {
-        if (!plugin.getDataManager().hasEffect(event.getPlayer(), this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(event.getPlayer(), this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(event.getLastAttacker(), this)) return;
-
-
+    @EventHandler public void removeLootingWhenDropped(PlayerDropItemEvent event) { ItemUtil.removeSpecialEnchant(event.getItemDrop().getItemStack(), Emerald.LOOTING_KEY, Enchantment.LOOTING); }
+    @EventHandler public void tenHitEvent(TenHitsTakenEvent event) {
+        if (!plugin.getDataManager().hasEffect(event.getPlayer(), this) || plugin.getRegionBlocker().isEffectBlocked(event.getPlayer(), this) || plugin.getRegionBlocker().isEffectBlocked(event.getLastAttacker(), this)) return;
         new FoodAndExpLock(plugin, event.getLastAttacker(), plugin.getMainConfig().emeraldLockDurationSeconds());
     }
 
     public static class FoodAndExpLock implements Listener {
         private final LivingEntity player;
-
         public FoodAndExpLock(Infuse plugin, LivingEntity player, double durationSeconds) {
             this.player = player;
-
-            Bukkit.getPluginManager().registerEvents(this, plugin);
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                HandlerList.unregisterAll(this);
-            }, (long) (durationSeconds * 20));
+            SchedulerUtil.runGlobal(plugin, ignored -> Bukkit.getPluginManager().registerEvents(this, plugin));
+            SchedulerUtil.runGlobalDelayed(plugin, ignored -> HandlerList.unregisterAll(this), Math.max(1L, (long) (durationSeconds * 20)));
         }
-
-        /** Preventing the player's food level from changing. */
-        @EventHandler
-        public void preventFoodChange(FoodLevelChangeEvent event) {
-            if (event.getEntity().getUniqueId().equals(player.getUniqueId())) {
-                event.setCancelled(true);
-            }
-        }
-
-        /** Preventing the player's exp level from changing. */
-        @EventHandler
-        public void preventExpChange(PlayerExpChangeEvent event) {
-            if (event.getPlayer().getUniqueId().equals(player.getUniqueId())) {
-                event.setAmount(0);
-            }
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (!(obj instanceof FoodAndExpLock other)) return false;
-
-            return other.player.getUniqueId().equals(player.getUniqueId());
-        }
+        @EventHandler public void preventFoodChange(FoodLevelChangeEvent event) { if (event.getEntity().getUniqueId().equals(player.getUniqueId())) event.setCancelled(true); }
+        @EventHandler public void preventExpChange(PlayerExpChangeEvent event) { if (event.getPlayer().getUniqueId().equals(player.getUniqueId())) event.setAmount(0); }
+        @Override public boolean equals(Object obj) { return obj instanceof FoodAndExpLock other && other.player.getUniqueId().equals(player.getUniqueId()); }
     }
 
-    @EventHandler
-    public void emeraldExpMultiplier(PlayerPickupExperienceEvent event) {
+    @EventHandler public void emeraldExpMultiplier(PlayerPickupExperienceEvent event) {
         Player player = event.getPlayer();
-
-        if (!plugin.getDataManager().hasEffect(player, this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
-
+        if (!plugin.getDataManager().hasEffect(player, this) || plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
         ExperienceOrb orb = event.getExperienceOrb();
-        int amount = orb.getExperience();
-
-        double multiplier = plugin.getMainConfig().emeraldMultiplierStandard();
-        if (CooldownManager.isEffectActive(player.getUniqueId(), "emerald")) {
-            multiplier = plugin.getMainConfig().emeraldMultiplierUseEffect();
-        }
-
-        int newAmount = (int) Math.round(amount * multiplier);
-        orb.setExperience(newAmount);
+        double multiplier = CooldownManager.isEffectActive(player.getUniqueId(), "emerald") ? plugin.getMainConfig().emeraldMultiplierUseEffect() : plugin.getMainConfig().emeraldMultiplierStandard();
+        orb.setExperience((int) Math.round(orb.getExperience() * multiplier));
     }
 
-    @SuppressWarnings({ "UnstableApiUsage", "unchecked" })
-    @EventHandler
-    public void emeraldEnchantBonus(PrepareItemEnchantEvent event) {
+    @SuppressWarnings({"UnstableApiUsage", "unchecked"})
+    @EventHandler public void emeraldEnchantBonus(PrepareItemEnchantEvent event) {
         ItemStack item = event.getItem();
-
-        // Skipping non-enchantable items
-        if (!item.hasData(DataComponentTypes.ENCHANTABLE)) return;
-
-        // Skipping already enchanted items
-        if (!item.getEnchantments().isEmpty()) return;
-
-        // Making sure the enchanter has the emerald effect
+        if (!item.hasData(DataComponentTypes.ENCHANTABLE) || !item.getEnchantments().isEmpty()) return;
         Player player = event.getEnchanter();
-        if (!plugin.getDataManager().hasEffect(player, this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
-
-        EnchantmentOffer[] offers = event.getOffers();
-        Random random = new Random(player.getEnchantmentSeed());
-
-        // Calculating the costs
-        for (int    k = 0; k < 3; k++) {
-            int cost;
-
+        if (!plugin.getDataManager().hasEffect(player, this) || plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
+        EnchantmentOffer[] offers = event.getOffers(); Random random = new Random(player.getEnchantmentSeed());
+        for (int k = 0; k < 3; k++) {
             Enchantable enchantable = item.getData(DataComponentTypes.ENCHANTABLE);
-            if (enchantable == null) {
-                offers[k] = null;
-                continue;
-            }
-
+            if (enchantable == null) { offers[k] = null; continue; }
             int i = random.nextInt(1, 9) + 7 + random.nextInt(0, 16);
-
-            // Calculating cose
-            if (k == 0) {
-                cost = Math.max(i / 3, 1);
-            } else if (k == 1) {
-                cost = i * 2 / 3 + 1;
-            } else {
-                cost = Math.max(i, 30);
-            }
-
-            if (cost < k + 1) {
-                offers[k] = null;
-                continue;
-            }
-
+            int cost = k == 0 ? Math.max(i / 3, 1) : k == 1 ? i * 2 / 3 + 1 : Math.max(i, 30);
+            if (cost < k + 1) { offers[k] = null; continue; }
             try {
                 EnchantmentMenu menu = (EnchantmentMenu) ((CraftEnchantmentView) event.getView()).getHandle();
-
                 Method getEnchantmentList = menu.getClass().getDeclaredMethod("getEnchantmentList", RegistryAccess.class, net.minecraft.world.item.ItemStack.class, int.class, int.class);
                 getEnchantmentList.setAccessible(true);
-
                 List<?> list = (List<?>) getEnchantmentList.invoke(menu, ((CraftWorld) player.getWorld()).getHandle().registryAccess(), CraftItemStack.asNMSCopy(item), k, cost);
                 if (!list.isEmpty()) {
-                    EnchantmentInstance enchantmentinstance = (EnchantmentInstance) list.get(random.nextInt(list.size()));
-
-                    Holder<net.minecraft.world.item.enchantment.Enchantment> enchantment;
-                    int level;
-
+                    EnchantmentInstance instance = (EnchantmentInstance) list.get(random.nextInt(list.size()));
+                    Holder<net.minecraft.world.item.enchantment.Enchantment> enchantment; int level;
                     Class<EnchantmentInstance> clazz = EnchantmentInstance.class;
-
-                    if (!clazz.isRecord()) {
-                        // Handling pre-1.21.5
-                        enchantment = (Holder<net.minecraft.world.item.enchantment.Enchantment>) clazz.getField("enchantment").get(enchantmentinstance);
-                        level = (int) clazz.getField("level").get(enchantmentinstance);
-                    } else {
-                        RecordComponent[] components = clazz.getRecordComponents();
-                        enchantment = (Holder<net.minecraft.world.item.enchantment.Enchantment>) components[0].getAccessor().invoke(enchantmentinstance);
-                        level = (int) components[1].getAccessor().invoke(enchantmentinstance);
-                    }
+                    if (!clazz.isRecord()) { enchantment = (Holder<net.minecraft.world.item.enchantment.Enchantment>) clazz.getField("enchantment").get(instance); level = (int) clazz.getField("level").get(instance); }
+                    else { RecordComponent[] components = clazz.getRecordComponents(); enchantment = (Holder<net.minecraft.world.item.enchantment.Enchantment>) components[0].getAccessor().invoke(instance); level = (int) components[1].getAccessor().invoke(instance); }
                     offers[k] = new EnchantmentOffer(CraftEnchantment.minecraftHolderToBukkit(enchantment), level, cost);
                 }
                 getEnchantmentList.setAccessible(false);
-            } catch (NoSuchMethodException e) {
-                Infuse.LOGGER.error("Could not find the \"getEnchantmentList\" method in the EnchantmentMenu class");
-            } catch (Exception e) {
-                Infuse.LOGGER.error("Error while calculating enchantments:", e);
-            }
+            } catch (NoSuchMethodException e) { Infuse.LOGGER.error("Could not find the \"getEnchantmentList\" method in the EnchantmentMenu class"); }
+            catch (Exception e) { Infuse.LOGGER.error("Error while calculating enchantments:", e); }
         }
     }
 
-    @EventHandler
-    public void stealExp(EntityDamageByEntityEvent event) {
-        if (!(event.getEntity() instanceof Player damaged)) return;
-        if (!(event.getDamageSource().getCausingEntity() instanceof Player attacker)) return;
-        if (!plugin.getDataManager().hasEffect(attacker, this)) return;
-
-        if (plugin.getRegionBlocker().isEffectBlocked(attacker, this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(damaged, this)) return;
-
-        // Getting configs
-        int exp = damaged.getTotalExperience();
-        int expPerHit = plugin.getMainConfig().emeraldExpPerHit();
-
-        // Updating the xp of the players
+    @EventHandler public void stealExp(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player damaged) || !(event.getDamageSource().getCausingEntity() instanceof Player attacker) || !plugin.getDataManager().hasEffect(attacker, this)) return;
+        if (plugin.getRegionBlocker().isEffectBlocked(attacker, this) || plugin.getRegionBlocker().isEffectBlocked(damaged, this)) return;
+        int exp = damaged.getTotalExperience(), expPerHit = plugin.getMainConfig().emeraldExpPerHit();
         damaged.setTotalExperience(Math.max(exp - expPerHit, 0));
-
         int toGain = (int) (Math.min(expPerHit, exp) * plugin.getMainConfig().emeraldExpPercent());
         attacker.setTotalExperience(attacker.getTotalExperience() + toGain);
-
-        // Calling the exp change event to allow for sharing if the spark is active
         new PlayerExpChangeEvent(attacker, toGain).callEvent();
     }
 
-    @EventHandler
-    public void emeraldPreserveConsumables(PlayerItemConsumeEvent event) {
+    @EventHandler public void emeraldPreserveConsumables(PlayerItemConsumeEvent event) {
         Player player = event.getPlayer();
-
-        // Making sure the player has the emerald effect
-        if (!plugin.getDataManager().hasEffect(player, this)) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
-
-        ItemStack consumedItem = event.getItem();
-
-        // Not allowing potions to be be preserved
-        if (consumedItem.getType() == Material.POTION) return;
-
-        // Getting the chance for the item to not be consumed
-        double chance = 0.5;
-        if (CooldownManager.isEffectActive(player.getUniqueId(), "emerald")) chance = 0.75;
-
-        // Rolling the dice
+        if (!plugin.getDataManager().hasEffect(player, this) || plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
+        ItemStack consumedItem = event.getItem(); if (consumedItem.getType() == Material.POTION) return;
+        double chance = CooldownManager.isEffectActive(player.getUniqueId(), "emerald") ? 0.75 : 0.5;
         if (Math.random() > chance) return;
-
-        // Refunding the item
-        consumedItem.add(1);
-        event.setItem(consumedItem);
-
-        // Playing a noise
+        consumedItem.add(1); event.setItem(consumedItem);
         player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1, 1);
         player.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, player.getLocation(), 3, 1.5, 0.5, 0.5, 0.01);
     }
 
-    @EventHandler
-    public void expShare(PlayerExpChangeEvent event) {
+    @EventHandler public void expShare(PlayerExpChangeEvent event) {
         Player player = event.getPlayer();
-        if (!CooldownManager.isEffectActive(player.getUniqueId(), "emerald")) return;
-        if (plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
-
+        if (!CooldownManager.isEffectActive(player.getUniqueId(), "emerald") || plugin.getRegionBlocker().isEffectBlocked(player, this)) return;
+        int toGain = (int) (event.getAmount() * plugin.getMainConfig().emeraldPercentExpToShare());
+        if (toGain <= 0) return;
         for (OfflinePlayer trusted : plugin.getTrustManager().getTrusted(player)) {
-            Player trustedPlayer = trusted.getPlayer();
-
-            if (trustedPlayer == null) continue;
-            if (plugin.getRegionBlocker().isEffectBlocked(trustedPlayer, this)) continue;
-
-            int toGain = (int) (event.getAmount() * plugin.getMainConfig().emeraldPercentExpToShare());
-            trustedPlayer.setTotalExperience(trustedPlayer.getTotalExperience() + toGain);
-
-            // Not calling PlayerExpChangeEvent to prevent infinite looping
+            Player trustedPlayer = trusted.getPlayer(); if (trustedPlayer == null) continue;
+            SchedulerUtil.run(trustedPlayer, plugin, () -> {
+                if (!trustedPlayer.isOnline() || plugin.getRegionBlocker().isEffectBlocked(trustedPlayer, this)) return;
+                trustedPlayer.setTotalExperience(trustedPlayer.getTotalExperience() + toGain);
+            });
         }
     }
 }

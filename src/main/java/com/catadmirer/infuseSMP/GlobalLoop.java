@@ -3,95 +3,141 @@ package com.catadmirer.infuseSMP;
 import com.catadmirer.infuseSMP.effects.Heart;
 import com.catadmirer.infuseSMP.effects.InfuseEffect;
 import com.catadmirer.infuseSMP.extraeffects.Apophis;
+import com.catadmirer.infuseSMP.managers.ActionBarUpdater;
 import com.catadmirer.infuseSMP.managers.ParticleManager;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.entity.Player;
-import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
-public class GlobalLoop extends BukkitRunnable {
+/**
+ * Runs player-owned passive work once per second.
+ *
+ * <p>One entity-scheduler task is attached to each player instead of one global BukkitScheduler task.
+ * This keeps every entity/world access on the region that owns the player and lets Folia retire the
+ * task automatically when the player entity retires.</p>
+ */
+public final class GlobalLoop implements Listener {
     private final Infuse plugin;
+    private final ActionBarUpdater actionBarUpdater;
+    private final Map<UUID, ScheduledTask> playerTasks = new ConcurrentHashMap<>();
 
-    private static final HashSet<UUID> lEffectDisabled = new HashSet<>();
-    private static final HashSet<UUID> rEffectDisabled = new HashSet<>();
+    private final Set<UUID> lEffectDisabled = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> rEffectDisabled = ConcurrentHashMap.newKeySet();
 
     public GlobalLoop(Infuse plugin) {
         this.plugin = plugin;
+        this.actionBarUpdater = new ActionBarUpdater(plugin);
     }
 
     public void start() {
-        this.runTaskTimer(plugin, 0, 20);
+        Bukkit.getGlobalRegionScheduler().run(plugin, ignored -> {
+            for (Player player : Bukkit.getOnlinePlayers()) startPlayerLoop(player);
+        });
     }
 
     public void stop() {
-        this.cancel();
+        playerTasks.values().forEach(ScheduledTask::cancel);
+        playerTasks.clear();
+        lEffectDisabled.clear();
+        rEffectDisabled.clear();
     }
 
-    @SuppressWarnings("deprecation")
-    @Override
-    public void run() {
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            // Getting the player's equipped effects
-            final InfuseEffect lEffect = plugin.getDataManager().getEffect(player.getUniqueId(), "1");
-            final InfuseEffect rEffect = plugin.getDataManager().getEffect(player.getUniqueId(), "2");
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onJoin(PlayerJoinEvent event) {
+        startPlayerLoop(event.getPlayer());
+    }
 
-            ParticleManager.spawnEffectParticles(player, lEffect);
-            ParticleManager.spawnEffectParticles(player, rEffect);
-            ParticleManager.spawnCursedParticles(player);
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onQuit(PlayerQuitEvent event) {
+        UUID uuid = event.getPlayer().getUniqueId();
+        ScheduledTask task = playerTasks.remove(uuid);
+        if (task != null) task.cancel();
+        lEffectDisabled.remove(uuid);
+        rEffectDisabled.remove(uuid);
+    }
 
-            // Applying passive effects to the player
-            if (lEffect != null) {
-                final boolean shouldBlock = plugin.getRegionBlocker().isEffectBlocked(player, lEffect);
-                boolean isBlocked = lEffectDisabled.contains(player.getUniqueId());
+    private void startPlayerLoop(Player player) {
+        UUID uuid = player.getUniqueId();
+        if (playerTasks.containsKey(uuid)) return;
 
-                if (shouldBlock && !isBlocked) {
-                    lEffect.unequip(player);
-                    lEffectDisabled.add(player.getUniqueId());
-                    isBlocked = true;
-                } else if (!shouldBlock && isBlocked) {
-                    lEffect.equip(player);
-                    lEffectDisabled.remove(player.getUniqueId());
-                    isBlocked = false;
-                }
+        ScheduledTask task = player.getScheduler().runAtFixedRate(
+                plugin,
+                ignored -> tick(player),
+                () -> {
+                    playerTasks.remove(uuid);
+                    lEffectDisabled.remove(uuid);
+                    rEffectDisabled.remove(uuid);
+                },
+                1L,
+                20L
+        );
 
-                if (!isBlocked) lEffect.applyPassives(player);
-            }
+        if (task == null) return;
+        ScheduledTask previous = playerTasks.putIfAbsent(uuid, task);
+        if (previous != null) task.cancel();
+    }
 
-            // Applying passive effects to the player
-            if (rEffect != null) {
-                final boolean shouldBlock = plugin.getRegionBlocker().isEffectBlocked(player, rEffect);
-                boolean isBlocked = rEffectDisabled.contains(player.getUniqueId());
-                if (shouldBlock && !isBlocked) {
-                    rEffect.unequip(player);
-                    rEffectDisabled.add(player.getUniqueId());
-                    isBlocked = true;
-                } else if (!shouldBlock && isBlocked) {
-                    rEffect.equip(player);
-                    rEffectDisabled.remove(player.getUniqueId());
-                    isBlocked = false;
-                }
+    private void tick(Player player) {
+        if (!player.isOnline()) return;
 
-                if (!isBlocked) rEffect.applyPassives(player);
-            }
+        UUID uuid = player.getUniqueId();
+        InfuseEffect lEffect = plugin.getDataManager().getEffect(uuid, "1");
+        InfuseEffect rEffect = plugin.getDataManager().getEffect(uuid, "2");
 
-            // Making sure the apophis boost has been removed
-            Apophis apophis = (Apophis) InfuseEffect.getEffect(EffectConstants.Keys.APOPHIS);
-            if (apophis != null && !plugin.getDataManager().hasEffect(player, apophis)) {
-                AttributeInstance playerHealth = player.getAttribute(Attribute.MAX_HEALTH);
-                assert playerHealth != null;
-                playerHealth.removeModifier(Apophis.APOPHIS_BOOST);
-            }
+        ParticleManager.spawnEffectParticles(player, lEffect);
+        ParticleManager.spawnEffectParticles(player, rEffect);
+        ParticleManager.spawnCursedParticles(player);
 
-            // Making sure the heart boost has been removed
-            Heart heart = (Heart) InfuseEffect.getEffect(EffectConstants.Keys.HEART);
-            if (heart != null && !plugin.getDataManager().hasEffect(player, heart)) {
-                AttributeInstance playerHealth = player.getAttribute(Attribute.MAX_HEALTH);
-                assert playerHealth != null;
-                playerHealth.removeModifier(Heart.heartBoost);
-            }
+        handlePassive(player, lEffect, lEffectDisabled);
+        handlePassive(player, rEffect, rEffectDisabled);
+        removeStaleHealthModifiers(player);
+        actionBarUpdater.update(player);
+    }
+
+    private void handlePassive(Player player, InfuseEffect effect, Set<UUID> disabled) {
+        if (effect == null) return;
+
+        UUID uuid = player.getUniqueId();
+        boolean shouldBlock = plugin.getRegionBlocker().isEffectBlocked(player, effect);
+        boolean blocked = disabled.contains(uuid);
+
+        if (shouldBlock && !blocked) {
+            effect.unequip(player);
+            disabled.add(uuid);
+            blocked = true;
+        } else if (!shouldBlock && blocked) {
+            effect.equip(player);
+            disabled.remove(uuid);
+            blocked = false;
+        }
+
+        if (!blocked) effect.applyPassives(player);
+    }
+
+    private void removeStaleHealthModifiers(Player player) {
+        AttributeInstance health = player.getAttribute(Attribute.MAX_HEALTH);
+        if (health == null) return;
+
+        Apophis apophis = (Apophis) InfuseEffect.getEffect(EffectConstants.Keys.APOPHIS);
+        if (apophis != null && !plugin.getDataManager().hasEffect(player, apophis)) {
+            health.removeModifier(Apophis.APOPHIS_BOOST);
+        }
+
+        Heart heart = (Heart) InfuseEffect.getEffect(EffectConstants.Keys.HEART);
+        if (heart != null && !plugin.getDataManager().hasEffect(player, heart)) {
+            health.removeModifier(Heart.heartBoost);
         }
     }
 }

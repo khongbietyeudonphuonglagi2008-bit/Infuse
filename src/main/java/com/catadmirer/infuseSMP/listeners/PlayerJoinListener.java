@@ -6,7 +6,6 @@ import com.catadmirer.infuseSMP.Message.MessageType;
 import com.catadmirer.infuseSMP.effects.InfuseEffect;
 
 import com.catadmirer.infuseSMP.managers.RecipeManager;
-import net.kyori.adventure.resource.ResourcePackRequest;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -66,28 +65,11 @@ public class PlayerJoinListener implements Listener {
 
     @EventHandler
     public void giveResourcePack(PlayerJoinEvent event) {
-        var request = ResourcePackRequest.resourcePackRequest()
-                .packs(Infuse.RESOURCE_PACK)
-                .required(true)
-                .build();
-
-        event.getPlayer().sendResourcePacks(request);
+        plugin.sendResourcePackWhenReady(event.getPlayer());
     }
 
     @EventHandler
     public void checkForUpdate(PlayerJoinEvent event) {
-        Player player = event.getPlayer();
-
-        // Not notifying operators
-        if (!player.hasPermission("infuse.update_notify")) return;
-
-        // Sending the update message (if needed)
-        if (!plugin.getVersion().equals(plugin.getLatestVersion())) {
-            Message msg = new Message(Message.MessageType.UPDATE_AVAILABLE);
-            msg.applyPlaceholder("current_version", plugin.getVersion());
-            msg.applyPlaceholder("latest_version", plugin.getLatestVersion());
-
-            player.sendMessage(msg.toComponent());
-        }
+        plugin.notifyUpdateIfAvailable(event.getPlayer());
     }
 }

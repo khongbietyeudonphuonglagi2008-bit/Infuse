@@ -1,117 +1,159 @@
 package com.catadmirer.infuseSMP.managers;
 
-import net.kyori.adventure.text.Component;
-import org.bukkit.Bukkit;
-
-import java.util.*;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class CooldownManager {
+/**
+ * Lock-free timestamp based cooldown/duration registry.
+ *
+ * <p>Expired entries are pruned on reads, so long-running servers do not accumulate stale ability
+ * keys and prefix lookups cannot accidentally stop at an expired key while another matching key is
+ * still active.</p>
+ */
+public final class CooldownManager {
     private static final Map<UUID, Map<String, Long>> cooldowns = new ConcurrentHashMap<>();
     private static final Map<UUID, Map<String, Long>> durations = new ConcurrentHashMap<>();
 
+    private CooldownManager() {}
+
     public static void setTimes(UUID playerUUID, String key, long durationSeconds, long cooldownSeconds) {
-        setCooldown(playerUUID, key, cooldownSeconds + durationSeconds);
+        setCooldown(playerUUID, key, Math.max(0L, cooldownSeconds) + Math.max(0L, durationSeconds));
         setDuration(playerUUID, key, durationSeconds);
     }
 
     public static void setDuration(UUID playerUUID, String key, long seconds) {
-        durations.computeIfAbsent(playerUUID, k -> new ConcurrentHashMap<>()).put(key, System.currentTimeMillis() + seconds * 1000);
+        putDeadline(durations, playerUUID, key, seconds);
     }
 
-    public static boolean isEffectActive(UUID playerUUID, String key) {
-        final Map<String, Long> playerDurations = durations.get(playerUUID);
-        if (playerDurations != null) {
-            final String cooldown = playerDurations.keySet().stream().filter(name -> name.startsWith(key)).findFirst().orElse(null);
-            if (cooldown == null) return false;
-
-            return getEffectTimeLeft(playerUUID, cooldown) > 0L;
-        }
-
-        return false;
+    public static boolean isEffectActive(UUID playerUUID, String keyPrefix) {
+        return hasActiveMatching(durations, playerUUID, keyPrefix);
     }
 
     public static long getEffectTimeLeft(UUID playerUUID, String key) {
-        Map<String, Long> playerDurations = durations.get(playerUUID);
-        if (playerDurations != null && playerDurations.containsKey(key)) {
-            long timeLeft = playerDurations.get(key) - System.currentTimeMillis();
-            return timeLeft > 0 ? timeLeft : 0;
-        }
-
-        return 0;
+        return timeLeft(durations, playerUUID, key);
     }
 
     public static Set<String> getDurations(UUID playerUUID) {
-        return Set.copyOf(durations.getOrDefault(playerUUID, Map.of()).keySet());
+        return activeKeys(durations, playerUUID);
     }
 
     public static void clearSpecificDuration(UUID playerUUID, String key) {
-        Map<String, Long> playerDurations = durations.get(playerUUID);
-        if (playerDurations != null) {
-            playerDurations.remove(key);
-        }
+        removeKey(durations, playerUUID, key);
     }
 
     public static void cleanupExpiredDurations() {
-        long currentTime = System.currentTimeMillis();
-        for (UUID playerUUID : durations.keySet()) {
-            Map<String, Long> playerDurations = durations.get(playerUUID);
-            if (playerDurations != null) {
-                playerDurations.entrySet().removeIf(entry -> entry.getValue() <= currentTime);
-            }
-        }
+        cleanupAll(durations);
     }
 
-    public static boolean isOnCooldown(UUID playerUUID, String key) {
-        final Set<String> playerCooldowns = getCooldowns(playerUUID);
-        if (!playerCooldowns.isEmpty()) {
-            final String cooldown = playerCooldowns.stream().filter(name -> name.startsWith(key)).findFirst().orElse(null);
-            if (cooldown == null) return false;
-
-            return getCooldownTimeLeft(playerUUID, cooldown) > 0L;
-        }
-
-        return false;
+    public static boolean isOnCooldown(UUID playerUUID, String keyPrefix) {
+        return hasActiveMatching(cooldowns, playerUUID, keyPrefix);
     }
 
     public static void setCooldown(UUID playerUUID, String key, long seconds) {
-        cooldowns.computeIfAbsent(playerUUID, k -> new ConcurrentHashMap<>()).put(key, System.currentTimeMillis() + seconds * 1000);
+        putDeadline(cooldowns, playerUUID, key, seconds);
     }
 
     public static long getCooldownTimeLeft(UUID playerUUID, String key) {
-        Map<String, Long> playerCooldowns = cooldowns.get(playerUUID);
-        if (playerCooldowns != null && playerCooldowns.containsKey(key)) {
-            // ms
-            long timeLeft = playerCooldowns.get(key) - System.currentTimeMillis();
-            return timeLeft > 0 ? timeLeft : 0;
-        }
-
-        return 0;
+        return timeLeft(cooldowns, playerUUID, key);
     }
 
     public static Set<String> getCooldowns(UUID playerUUID) {
-        return Set.copyOf(cooldowns.getOrDefault(playerUUID, Map.of()).keySet());
+        return activeKeys(cooldowns, playerUUID);
     }
 
     public static void clearSpecificCooldown(UUID playerUUID, String key) {
-        Map<String, Long> playerCooldowns = cooldowns.get(playerUUID);
-        if (playerCooldowns != null) {
-            playerCooldowns.remove(key);
-        }
+        removeKey(cooldowns, playerUUID, key);
     }
 
     public static void cleanupAllExpiredCooldowns() {
-        long currentTime = System.currentTimeMillis();
-
-        for (UUID playerUUID : cooldowns.keySet()) {
-            Map<String, Long> playerCooldowns = cooldowns.get(playerUUID);
-            if (playerCooldowns != null) {
-                playerCooldowns.entrySet().removeIf(entry -> entry.getValue() <= currentTime);
-            }
-        }
+        cleanupAll(cooldowns);
     }
 
+    /** Clears cooldown state while preserving currently active effect durations. */
     public static void removeAllCooldowns(UUID playerUUID) {
         cooldowns.remove(playerUUID);
+    }
+
+    /** Clears both cooldown and active-duration state, intended for plugin shutdown/tests. */
+    public static void clearAllState(UUID playerUUID) {
+        cooldowns.remove(playerUUID);
+        durations.remove(playerUUID);
+    }
+
+    private static void putDeadline(Map<UUID, Map<String, Long>> store, UUID playerUUID, String key, long seconds) {
+        long safeSeconds = Math.max(0L, seconds);
+        long now = System.currentTimeMillis();
+        long millis;
+        try {
+            millis = Math.multiplyExact(safeSeconds, 1_000L);
+        } catch (ArithmeticException ignored) {
+            millis = Long.MAX_VALUE - now;
+        }
+        long deadline = millis >= Long.MAX_VALUE - now ? Long.MAX_VALUE : now + millis;
+        store.computeIfAbsent(playerUUID, ignored -> new ConcurrentHashMap<>()).put(key, deadline);
+    }
+
+    private static boolean hasActiveMatching(Map<UUID, Map<String, Long>> store, UUID playerUUID, String prefix) {
+        Map<String, Long> entries = store.get(playerUUID);
+        if (entries == null) return false;
+
+        long now = System.currentTimeMillis();
+        boolean active = false;
+        for (Map.Entry<String, Long> entry : entries.entrySet()) {
+            if (entry.getValue() <= now) {
+                entries.remove(entry.getKey(), entry.getValue());
+                continue;
+            }
+            String name = entry.getKey();
+            if (name.equals(prefix) || name.startsWith(prefix + "_")) active = true;
+        }
+        removeOuterIfEmpty(store, playerUUID, entries);
+        return active;
+    }
+
+    private static long timeLeft(Map<UUID, Map<String, Long>> store, UUID playerUUID, String key) {
+        Map<String, Long> entries = store.get(playerUUID);
+        if (entries == null) return 0L;
+        Long deadline = entries.get(key);
+        if (deadline == null) return 0L;
+
+        long left = deadline - System.currentTimeMillis();
+        if (left > 0L) return left;
+        entries.remove(key, deadline);
+        removeOuterIfEmpty(store, playerUUID, entries);
+        return 0L;
+    }
+
+    private static Set<String> activeKeys(Map<UUID, Map<String, Long>> store, UUID playerUUID) {
+        Map<String, Long> entries = store.get(playerUUID);
+        if (entries == null) return Set.of();
+        pruneExpired(entries, System.currentTimeMillis());
+        removeOuterIfEmpty(store, playerUUID, entries);
+        return Set.copyOf(entries.keySet());
+    }
+
+    private static void removeKey(Map<UUID, Map<String, Long>> store, UUID playerUUID, String key) {
+        Map<String, Long> entries = store.get(playerUUID);
+        if (entries == null) return;
+        entries.remove(key);
+        removeOuterIfEmpty(store, playerUUID, entries);
+    }
+
+    private static void cleanupAll(Map<UUID, Map<String, Long>> store) {
+        long now = System.currentTimeMillis();
+        store.forEach((uuid, entries) -> {
+            pruneExpired(entries, now);
+            removeOuterIfEmpty(store, uuid, entries);
+        });
+    }
+
+    private static void pruneExpired(Map<String, Long> entries, long now) {
+        entries.entrySet().removeIf(entry -> entry.getValue() <= now);
+    }
+
+    private static void removeOuterIfEmpty(Map<UUID, Map<String, Long>> store, UUID playerUUID, Map<String, Long> entries) {
+        if (entries.isEmpty()) store.remove(playerUUID, entries);
     }
 }
